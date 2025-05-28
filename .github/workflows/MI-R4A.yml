@@ -34,7 +34,7 @@ jobs:
         echo "Workspace path: $GITHUB_WORKSPACE"
         mkdir -p $GITHUB_WORKSPACE/images
         echo "Cloning Padavan source code..."
-        git clone --depth=1 https://github.com/Bobby-Lang/padavan-4.4.git $GITHUB_WORKSPACE/rt-n56u || { echo "::error::Git clone failed"; exit 1; }
+        git clone --depth=1 https://github.com/jinenge/padavan-4.4.git $GITHUB_WORKSPACE/rt-n56u || { echo "::error::Git clone failed"; exit 1; }
         echo "Source code cloned successfully"
         
     - name: Setup toolchain
@@ -48,7 +48,7 @@ jobs:
       env:
         TNAME: MI-R4A
       run: |
-        set -e  # 任何命令失败立即退出
+        set -euo pipefail  # 更严格的错误处理
         echo "Starting firmware build for $TNAME"
         cd $GITHUB_WORKSPACE/rt-n56u/trunk
         
@@ -56,6 +56,7 @@ jobs:
         echo "Checking for template config..."
         if [ ! -f "configs/templates/$TNAME.config" ]; then
           echo "::error::configs/templates/$TNAME.config not found"
+          echo "Available templates:"
           ls -la configs/templates/ || true
           exit 1
         fi
@@ -77,7 +78,7 @@ jobs:
         sed -i 's/CONFIG_FIRMWARE_INCLUDE_SRELAY=y/CONFIG_FIRMWARE_INCLUDE_SRELAY=n/g' .config
         sed -i 's/CONFIG_FIRMWARE_INCLUDE_SHADOWSOCKS=y/CONFIG_FIRMWARE_INCLUDE_SHADOWSOCKS=n/g' .config
         
-        # 4. 添加自定义配置
+        # 4. 添加自定义配置 - 修复配置冲突
         echo "Adding custom configuration..."
         {
           echo "# Custom configuration added by build script"
@@ -87,9 +88,9 @@ jobs:
           echo "CONFIG_FIRMWARE_INCLUDE_TROJAN=n"
           echo "CONFIG_FIRMWARE_INCLUDE_SSOBFS=n"
           echo "CONFIG_FIRMWARE_INCLUDE_ADBYBY=y"
+          # 修复冲突的配置项 - ADGUARDHOME 只设置一次
           echo "CONFIG_FIRMWARE_INCLUDE_ADGUARDHOME=y"
           echo "CONFIG_FIRMWARE_INCLUDE_SMARTDNS=n"
-          echo "CONFIG_FIRMWARE_INCLUDE_ADGUARDHOME=n"
           echo "CONFIG_FIRMWARE_INCLUDE_ZEROTIER=n"
           echo "CONFIG_FIRMWARE_INCLUDE_ALIDDNS=n"
           echo "CONFIG_FIRMWARE_INCLUDE_DDNSTO=n"
@@ -113,27 +114,49 @@ jobs:
         echo "Cleaning workspace..."
         ./clear_tree || { echo "::warning::Clean command failed, continuing anyway"; }
         
-        # 7. 构建固件 - 启用详细日志
+        # 7. 构建固件 - 启用详细日志并捕获输出
         echo "Building firmware with verbose output..."
-        ./build_firmware_modify $TNAME 0 V=1 || { 
+        
+        # 创建日志文件并实时输出到控制台
+        rm -f build.log
+        touch build.log
+        tail -f build.log &  # 后台实时输出日志
+        
+        # 运行构建命令并捕获所有输出
+        ./build_firmware_modify $TNAME 0 V=1 2>&1 | tee -a build.log || { 
           echo "::error::Firmware build failed";
-          # 尝试收集错误日志
-          [ -f build.log ] && tail -n 100 build.log || echo "No build log found";
+          # 显示错误部分日志
+          echo "Last 50 lines of build log:";
+          tail -n 50 build.log;
+          echo "Error section from build log:";
+          grep -i -A 20 -B 10 'error\|fail\|undefined' build.log || true;
           exit 1;
         }
         
+        # 停止后台日志输出
+        kill %1
+        
         # 8. 移动生成的固件
         echo "Moving firmware images..."
-        if [ -d "images" ]; then
+        if ls images/*.bin >/dev/null 2>&1; then
           mv -v images/*.bin $GITHUB_WORKSPACE/images/
           echo "Firmware files:"
           ls -lh $GITHUB_WORKSPACE/images/
         else
           echo "::error::No firmware files generated in images/"
+          echo "Generated files in images/:"
+          ls -R images/ || true
           exit 1
         fi
         
         echo "Build completed successfully!"
+        
+    - name: Upload build log
+      if: always()  # 总是上传日志，即使失败
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-log-${{ env.TNAME }}
+        path: $GITHUB_WORKSPACE/rt-n56u/trunk/build.log
         
     - name: Upload firmware artifacts
       if: success()
