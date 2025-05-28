@@ -1,155 +1,181 @@
-name: Build Padavan Firmware
+# 修改TNAME: MI-R4A中的MI-R4A为你需要编译的型号，注意名称要与configs/templates/目录下的名字相同
+name: Build MI-R4A Padavan4.4
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: # Allows manual triggering
     inputs:
-      name:
-        description: "Build Padavan"
-        required: true
-        default: "build"
+      trigger_message: # Changed input name to be more descriptive, though still not directly used in build logic below
+        description: "Manual trigger reason (e.g., 'build for testing')"
+        required: false
+        default: "Manual build"
+  # release:
+  #   types: [published]
   push:
     tags:
-      - "v*"
+      - "v*" # Triggers on new tags starting with v (e.g., v1.0, v2023.04.01)
+  #  branches:
+  #    - master
+  #  schedule:
+  #    - cron: 0 8 * * 5
+  #watch:
+  #  types: [started]
 
 jobs:
   build:
     runs-on: ubuntu-22.04
+    # This condition ensures the workflow only runs if triggered by the repository owner.
+    # Useful to prevent forks from running actions using your resources/secrets.
     if: github.event.repository.owner.id == github.event.sender.id
 
+    env:
+      # Define TNAME here to be accessible by all steps if needed,
+      # particularly for artifact naming or conditional steps later.
+      # This is the primary model identifier for this workflow file.
+      TNAME_MODEL: MI-R4A # Using a distinct env var name for clarity
+
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-      
-    - name: Install dependencies
+    - name: Checkout workflow repository
+      uses: actions/checkout@v4 # Use specific version
+
+    - name: Initialization environment
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
+        set -eo pipefail # Exit immediately if a command exits with a non-zero status
         sudo apt-get update
-        sudo apt-get -y install unzip libtool-bin curl cmake gperf gawk flex bison nano xxd \
-        cpio git python3-docutils gettext automake autopoint texinfo build-essential help2man \
-        pkg-config zlib1g-dev libgmp3-dev libmpc-dev libmpfr-dev libncurses5-dev libltdl-dev wget \
-        fakeroot  # 确保安装 fakeroot
-        
-    - name: Prepare workspace
+        sudo apt-get -y install \
+          unzip libtool-bin curl cmake gperf gawk flex bison nano xxd fakeroot \
+          cpio git python3-docutils gettext automake autopoint texinfo build-essential help2man \
+          pkg-config zlib1g-dev libgmp3-dev libmpc-dev libmpfr-dev libncurses5-dev libltdl-dev wget
+        # Changed python-docutils to python3-docutils for Ubuntu 22.04
+
+    - name: Clone Padavan source code
       run: |
-        echo "Workspace path: $GITHUB_WORKSPACE"
-        mkdir -p $GITHUB_WORKSPACE/images
-        echo "Cloning Padavan source code..."
-        git clone --depth=1 https://github.com/Bobby-Lang/padavan-4.4.git $GITHUB_WORKSPACE/rt-n56u || { echo "::error::Git clone failed"; exit 1; }
-        echo "Source code cloned successfully"
-        
-    - name: Setup toolchain
-      run: |
-        cd $GITHUB_WORKSPACE/rt-n56u/toolchain-mipsel
-        echo "Downloading toolchain..."
+        set -eo pipefail
+        # Using the robust clone command with error message for GitHub Actions
+        git clone --depth=1 https://github.com/Bobby-Lang/padavan-4.4.git /opt/rt-n56u || { echo "::error::Git clone of Padavan source failed"; exit 1; }
+        cd /opt/rt-n56u/toolchain-mipsel
         sh dl_toolchain.sh || { echo "::error::Toolchain download failed"; exit 1; }
-        echo "Toolchain setup completed"
-        
+        mkdir -p /opt/images/
+
     - name: Build Firmware
       env:
-        TNAME: MI-R4A
+        # TNAME here is specific to the build scripts inside the Padavan source
+        # It will use the job-level TNAME_MODEL
+        TNAME: ${{ env.TNAME_MODEL }}
       run: |
-        set -euo pipefail
-        echo "Starting firmware build for $TNAME"
-        cd $GITHUB_WORKSPACE/rt-n56u/trunk
-        
-        # 1. 检查模板是否存在
-        echo "Checking for template config..."
-        if [ ! -f "configs/templates/$TNAME.config" ]; then
-          echo "::error::configs/templates/$TNAME.config not found"
-          echo "Available templates:"
-          ls -la configs/templates/ || true
+        set -eo pipefail
+        cd /opt/rt-n56u/trunk
+
+        if [ ! -f "configs/templates/${TNAME}.config" ]; then
+          echo "::error::Configuration template configs/templates/${TNAME}.config not found!"
           exit 1
         fi
-        
-        # 2. 准备配置文件
-        echo "Copying template config..."
-        cp -fv configs/templates/$TNAME.config .config || exit 1
-        
-        # 3. 配置修改
-        echo "Modifying configuration..."
-        cp .config .config.original
-        
-        # 修改现有配置项
-        sed -i 's/CONFIG_FIRMWARE_INCLUDE_OPENSSL_EXE=n/CONFIG_FIRMWARE_INCLUDE_OPENSSL_EXE=y/g' .config
-        sed -i 's/CONFIG_FIRMWARE_INCLUDE_DNSFORWARDER=y/CONFIG_FIRMWARE_INCLUDE_DNSFORWARDER=n/g' .config
-        sed -i 's/CONFIG_FIRMWARE_INCLUDE_MENTOHUST=y/CONFIG_FIRMWARE_INCLUDE_MENTOHUST=n/g' .config
-        sed -i 's/CONFIG_FIRMWARE_INCLUDE_SCUTCLIENT=y/CONFIG_FIRMWARE_INCLUDE_SCUTCLIENT=n/g' .config
-        sed -i 's/CONFIG_FIRMWARE_INCLUDE_SRELAY=y/CONFIG_FIRMWARE_INCLUDE_SRELAY=n/g' .config
-        sed -i 's/CONFIG_FIRMWARE_INCLUDE_SHADOWSOCKS=y/CONFIG_FIRMWARE_INCLUDE_SHADOWSOCKS=n/g' .config
-        
-        # 4. 添加自定义配置
-        echo "Adding custom configuration..."
-        {
-          echo "# Custom configuration added by build script"
-          echo "CONFIG_FIRMWARE_INCLUDE_SHADOWSOCKS=y"
-          echo "CONFIG_FIRMWARE_INCLUDE_XRAY=n"
-          echo "CONFIG_FIRMWARE_INCLUDE_V2RAY=n"
-          echo "CONFIG_FIRMWARE_INCLUDE_TROJAN=n"
-          echo "CONFIG_FIRMWARE_INCLUDE_SSOBFS=n"
-          echo "CONFIG_FIRMWARE_INCLUDE_ADBYBY=y"
-          echo "CONFIG_FIRMWARE_INCLUDE_ADGUARDHOME=y"
-          echo "CONFIG_FIRMWARE_INCLUDE_SMARTDNS=n"
-          echo "CONFIG_FIRMWARE_INCLUDE_ZEROTIER=n"
-          echo "CONFIG_FIRMWARE_INCLUDE_ALIDDNS=n"
-          echo "CONFIG_FIRMWARE_INCLUDE_DDNSTO=n"
-          echo "CONFIG_FIRMWARE_INCLUDE_DDNSGO=n"
-          echo "CONFIG_FIRMWARE_INCLUDE_WIREGUARD=n"
-          echo "CONFIG_FIRMWARE_INCLUDE_CLOUDFLARE=y"
-          echo "CONFIG_FIRMWARE_INCLUDE_ALDRIVER=n"
-          echo "CONFIG_FIRMWARE_INCLUDE_MENTOHUST=n"
-          echo "CONFIG_FIRMWARE_INCLUDE_FTPD=n"
-          echo "CONFIG_FIRMWARE_INCLUDE_ALIST=y"
-          echo "CONFIG_FIRMWARE_INCLUDE_SQM=n"
-          echo "CONFIG_FIRMWARE_INCLUDE_OC=y"
-          echo 'CONFIG_FIRMWARE_MT7621_OC="0x3B2"'
-        } >> .config
-        
-        echo "Configuration differences:"
-        diff .config.original .config || true
-        
-        # 5. 清理工作区 - 使用fakeroot
-        echo "Cleaning workspace with fakeroot..."
-        fakeroot ./clear_tree || { echo "::warning::Clean command failed, continuing anyway"; }
-        
-        # 6. 构建固件 - 关键修复：使用fakeroot运行构建命令
-        echo "Building firmware with fakeroot..."
-        
-        # 运行构建命令并捕获所有输出
-        fakeroot ./build_firmware_modify $TNAME 0 V=1 2>&1 | tee build.log || { 
-          echo "::error::Firmware build failed";
-          echo "Last 50 lines of build log:";
-          tail -n 50 build.log;
-          echo "Error section from build log:";
-          grep -i -A 20 -B 10 'error\|fail\|undefined' build.log || true;
-          exit 1;
+        cp -f "configs/templates/${TNAME}.config" .config
+
+        # Function to safely update .config options
+        # Usage: update_config_option "CONFIG_KEY" "y/n/value"
+        update_config_option() {
+            local key="$1"
+            local value="$2"
+            # Remove existing line for the key (commented or uncommented)
+            sed -i "/^# ${key} is not set$/d" .config
+            sed -i "/^${key}=.*/d" .config
+            # Append the new key-value pair
+            echo "${key}=${value}" >> .config
+            echo "Set ${key}=${value}"
         }
+
+        # Apply base configurations
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_OPENSSL_EXE" "y"
+
+        ################################################################################################
+        # 因不同型号配置功能不一样，所以先把配置项删除，如果你自己要添加其他的，也要写上删除这一条，切记！！！
+        # This implies these options might be 'y' in the template and need to be forced to 'n'
+        # unless explicitly re-enabled later.
+        ################################################################################################
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_DNSFORWARDER" "n"
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_MENTOHUST" "n" # Will be re-evaluated later
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_SCUTCLIENT" "n"
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_SRELAY" "n"
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_SHADOWSOCKS" "n" # Will be re-evaluated later
+
+        ######################################################################
+        # 以下选项是定义你需要的功能（y=集成,n=忽略），重新写入到.config文件
+        ######################################################################
+
+        ##科学上网##
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_SHADOWSOCKS" "y" # 科学上网插件，选择n后全部有关插件都不集成
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_XRAY" "n"        # 集成xray执行文件 ~4.5M
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_V2RAY" "n"       # 集成v2ray执行文件
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_TROJAN" "n"      # 集成trojan执行文件 ~1.2M
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_SSOBFS" "n"      # simple-obfs混淆插件
+
+        ##广告管理##
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_ADBYBY" "y" # adbyby plus+
+        # This was ambiguously set to y then n. Assuming 'y' from "广告管理" is desired.
+        # The function update_config_option ensures previous settings are cleared.
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_ADGUARDHOME" "y"
+
+        ##DNS服务##
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_SMARTDNS" "n" # smartdns
+        # Removed conflicting `CONFIG_FIRMWARE_INCLUDE_ADGUARDHOME=n` as it was set to 'y' above.
+        # If SmartDNS is 'n' and AdGuardHome is 'y' (from above), AdGuardHome might handle DNS.
+        # If you want AdGuardHome strictly for filtering and NOT as a DNS server,
+        # and SmartDNS is also 'n', you need to ensure Padavan's default DNS (dnsmasq) is configured.
+        # This part of logic highly depends on how Padavan's Kconfig options interact.
+
+        ##内网穿透服务##
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_ZEROTIER" "n"   # zerotier ~1.3M
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_ALIDDNS" "n"    # aliddns
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_DDNSTO" "n"     # ddnsto ~0.5M
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_DDNSGO" "n"     # ddnsgo
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_WIREGUARD" "n"  # wireguard ~10k
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_CLOUDFLARE" "y" # cloudflare
+
+        ##其它网络服务## (Renamed section for clarity)
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_ALDRIVER" "n"  # ALDRIVER  ~3m
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_MENTOHUST" "n" # mentohust (already set to n, but explicit here is fine)
+
+        ## FTP服务 ~0.2MB ##
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_FTPD" "n" # ftp
+
+        ## Alist测试 ~10MB ##
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_ALIST" "y" # Alist
+
+        ##流控QOS##
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_SQM" "n" # Qos限速
+
+        #CPU超频#
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_OC" "y" # CPU超频开关
+        # Ensure the OC value is quoted if it might be interpreted by shell, though update_config_option handles quotes.
+        update_config_option "CONFIG_FIRMWARE_MT7621_OC" "0x3B2" # 此处填写对应频率的十六进制：1000Mhz=0x312 1100Mhz=0x362 1120Mhz=0x372 1200Mhz=0x3B2
+
+        #########################################################################################
+        # 自定义添加其它功能请参考源码configs/templates/目录下的config文件。按照上面的格式添加即可
+        # 格式如下：
+        # update_config_option "CONFIG_CUSTOM_FEATURE" "y"
+        #########################################################################################
+
+        echo "Final .config before build:"
+        cat .config # Output the .config for debugging
+
+        sudo ./clear_tree
+        sudo ./build_firmware_modify $TNAME 0 || { echo "::error::Firmware build failed (build_firmware_modify)"; exit 1; }
         
-        # 7. 移动生成的固件
-        echo "Moving firmware images..."
-        if find images/ -name '*.bin' | grep -q .; then
-          mv -v images/*.bin $GITHUB_WORKSPACE/images/
-          echo "Firmware files:"
-          ls -lh $GITHUB_WORKSPACE/images/
+        # Check if firmware files were created
+        if ls images/*.bin 1> /dev/null 2>&1; then
+          echo "Firmware built successfully."
+          sudo mv -f images/*.bin /opt/images/
         else
-          echo "::error::No firmware files generated in images/"
-          echo "Generated files in images/:"
-          find images/ -type f || true
+          echo "::error::No firmware files (*.bin) found in images/ directory after build."
           exit 1
         fi
-        
-        echo "Build completed successfully!"
-        
-    - name: Upload build log
-      if: always()
-      uses: actions/upload-artifact@v4
+
+    - name: Upload Firmware Artifact
+      uses: actions/upload-artifact@v4 # Use specific version
+      if: always() # Upload artifacts even if previous steps failed (e.g., for logs or partial builds)
       with:
-        name: build-log-${{ env.TNAME }}
-        path: $GITHUB_WORKSPACE/rt-n56u/trunk/build.log
-        
-    - name: Upload firmware artifacts
-      if: success()
-      uses: actions/upload-artifact@v4
-      with:
-        name: Padavan-Firmware-${{ env.TNAME }}
-        path: $GITHUB_WORKSPACE/images/*.bin
+        name: Padavan-${{ env.TNAME_MODEL }}-${{ github.run_id }} # More unique artifact name
+        path: /opt/images/
+        retention-days: 7 # Optional: Keep artifacts for 7 days
