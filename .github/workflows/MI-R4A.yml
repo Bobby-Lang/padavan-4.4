@@ -2,154 +2,136 @@
 name: Build MI-R4A Padavan4.4
 
 on:
-  workflow_dispatch: # Allows manual triggering
+  workflow_dispatch: # 允许手动触发
     inputs:
-      trigger_message: # Changed input name to be more descriptive, though still not directly used in build logic below
-        description: "Manual trigger reason (e.g., 'build for testing')"
+      trigger_message: # 修改了输入名称，使其更具描述性
+        description: "手动触发原因 (例如：'测试编译')"
         required: false
-        default: "Manual build"
-  # release:
-  #   types: [published]
+        default: "手动编译"
   push:
     tags:
-      - "v*" # Triggers on new tags starting with v (e.g., v1.0, v2023.04.01)
-  #  branches:
-  #    - master
-  #  schedule:
-  #    - cron: 0 8 * * 5
-  #watch:
-  #  types: [started]
+      - "v*" # 当推送 v 开头的标签时触发 (例如: v1.0, v2023.04.01)
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    # This condition ensures the workflow only runs if triggered by the repository owner.
-    # Useful to prevent forks from running actions using your resources/secrets.
+    # 此条件确保工作流仅由仓库所有者触发
     if: github.event.repository.owner.id == github.event.sender.id
 
     env:
-      # Define TNAME here to be accessible by all steps if needed,
-      # particularly for artifact naming or conditional steps later.
-      # This is the primary model identifier for this workflow file.
-      TNAME_MODEL: MI-R4A # Using a distinct env var name for clarity
+      # 在这里定义 TNAME_MODEL，以便所有步骤都可以访问
+      # 这是此工作流文件的主要型号标识符
+      TNAME_MODEL: MI-R4A
 
     steps:
-    - name: Checkout workflow repository
-      uses: actions/checkout@v4 # Use specific version
+    - name: Checkout workflow repository (检出工作流仓库代码)
+      uses: actions/checkout@v4 # 使用特定版本以保证稳定性
 
-    - name: Initialization environment
+    - name: Initialization environment (初始化编译环境)
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
-        set -eo pipefail # Exit immediately if a command exits with a non-zero status
+        set -eo pipefail # 如果任何命令失败，立即退出
         sudo apt-get update
         sudo apt-get -y install \
           unzip libtool-bin curl cmake gperf gawk flex bison nano xxd fakeroot \
           cpio git python3-docutils gettext automake autopoint texinfo build-essential help2man \
           pkg-config zlib1g-dev libgmp3-dev libmpc-dev libmpfr-dev libncurses5-dev libltdl-dev wget
-        # Changed python-docutils to python3-docutils for Ubuntu 22.04
+        # 将 python-docutils 更改为 python3-docutils 以适应 Ubuntu 22.04
 
-    - name: Clone Padavan source code
+    - name: Clone Padavan source code (克隆 Padavan 源码)
       run: |
         set -eo pipefail
-        # Using the robust clone command with error message for GitHub Actions
-        git clone --depth=1 https://github.com/Bobby-Lang/padavan-4.4.git /opt/rt-n56u || { echo "::error::Git clone of Padavan source failed"; exit 1; }
+        # 使用健壮的克隆命令，并在失败时提供 GitHub Actions 可识别的错误消息
+        git clone --depth=1 https://github.com/Bobby-Lang/padavan-4.4.git /opt/rt-n56u || { echo "::error::克隆 Padavan 源码失败"; exit 1; }
         cd /opt/rt-n56u/toolchain-mipsel
-        sh dl_toolchain.sh || { echo "::error::Toolchain download failed"; exit 1; }
-        mkdir -p /opt/images/
+        sh dl_toolchain.sh || { echo "::error::下载工具链失败"; exit 1; }
+        # 确保 /opt/images 目录存在
+        sudo mkdir -p /opt/images/
 
-    - name: Build Firmware
+    - name: Build Firmware (编译固件)
       env:
-        # TNAME here is specific to the build scripts inside the Padavan source
-        # It will use the job-level TNAME_MODEL
+        # 这里的 TNAME 是 Padavan 源码内部编译脚本使用的
+        # 它将使用作业级别的 TNAME_MODEL
         TNAME: ${{ env.TNAME_MODEL }}
       run: |
-        set -eo pipefail
+        set -eo pipefail # 如果任何命令失败，立即退出
         cd /opt/rt-n56u/trunk
 
         if [ ! -f "configs/templates/${TNAME}.config" ]; then
-          echo "::error::Configuration template configs/templates/${TNAME}.config not found!"
+          echo "::error::配置文件模板 configs/templates/${TNAME}.config 未找到！"
           exit 1
         fi
         cp -f "configs/templates/${TNAME}.config" .config
 
-        # Function to safely update .config options
-        # Usage: update_config_option "CONFIG_KEY" "y/n/value"
+        # 定义一个函数来安全地更新 .config 选项
+        # 用法: update_config_option "CONFIG_KEY" "y/n/值"
         update_config_option() {
             local key="$1"
             local value="$2"
-            # Remove existing line for the key (commented or uncommented)
+            # 删除该键已有的行 (无论是激活的还是注释掉的)
             sed -i "/^# ${key} is not set$/d" .config
             sed -i "/^${key}=.*/d" .config
-            # Append the new key-value pair
+            # 追加新的键值对
             echo "${key}=${value}" >> .config
-            echo "Set ${key}=${value}"
+            echo "设置 ${key}=${value}"
         }
 
-        # Apply base configurations
+        # 应用基础配置
         update_config_option "CONFIG_FIRMWARE_INCLUDE_OPENSSL_EXE" "y"
 
         ################################################################################################
         # 因不同型号配置功能不一样，所以先把配置项删除，如果你自己要添加其他的，也要写上删除这一条，切记！！！
-        # This implies these options might be 'y' in the template and need to be forced to 'n'
-        # unless explicitly re-enabled later.
         ################################################################################################
         update_config_option "CONFIG_FIRMWARE_INCLUDE_DNSFORWARDER" "n"
-        update_config_option "CONFIG_FIRMWARE_INCLUDE_MENTOHUST" "n" # Will be re-evaluated later
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_MENTOHUST" "n" # 稍后会重新评估
         update_config_option "CONFIG_FIRMWARE_INCLUDE_SCUTCLIENT" "n"
         update_config_option "CONFIG_FIRMWARE_INCLUDE_SRELAY" "n"
-        update_config_option "CONFIG_FIRMWARE_INCLUDE_SHADOWSOCKS" "n" # Will be re-evaluated later
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_SHADOWSOCKS" "n" # 稍后会重新评估
 
         ######################################################################
         # 以下选项是定义你需要的功能（y=集成,n=忽略），重新写入到.config文件
         ######################################################################
 
         ##科学上网##
-        update_config_option "CONFIG_FIRMWARE_INCLUDE_SHADOWSOCKS" "y" # 科学上网插件，选择n后全部有关插件都不集成
-        update_config_option "CONFIG_FIRMWARE_INCLUDE_XRAY" "n"        # 集成xray执行文件 ~4.5M
-        update_config_option "CONFIG_FIRMWARE_INCLUDE_V2RAY" "n"       # 集成v2ray执行文件
-        update_config_option "CONFIG_FIRMWARE_INCLUDE_TROJAN" "n"      # 集成trojan执行文件 ~1.2M
-        update_config_option "CONFIG_FIRMWARE_INCLUDE_SSOBFS" "n"      # simple-obfs混淆插件
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_SHADOWSOCKS" "y" # 科学上网插件
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_XRAY" "n"
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_V2RAY" "n"
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_TROJAN" "n"
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_SSOBFS" "n"
 
         ##广告管理##
-        update_config_option "CONFIG_FIRMWARE_INCLUDE_ADBYBY" "y" # adbyby plus+
-        # This was ambiguously set to y then n. Assuming 'y' from "广告管理" is desired.
-        # The function update_config_option ensures previous settings are cleared.
-        update_config_option "CONFIG_FIRMWARE_INCLUDE_ADGUARDHOME" "y"
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_ADBYBY" "y"
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_ADGUARDHOME" "y" # 确保 AdGuardHome 为 'y'
 
         ##DNS服务##
-        update_config_option "CONFIG_FIRMWARE_INCLUDE_SMARTDNS" "n" # smartdns
-        # Removed conflicting `CONFIG_FIRMWARE_INCLUDE_ADGUARDHOME=n` as it was set to 'y' above.
-        # If SmartDNS is 'n' and AdGuardHome is 'y' (from above), AdGuardHome might handle DNS.
-        # If you want AdGuardHome strictly for filtering and NOT as a DNS server,
-        # and SmartDNS is also 'n', you need to ensure Padavan's default DNS (dnsmasq) is configured.
-        # This part of logic highly depends on how Padavan's Kconfig options interact.
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_SMARTDNS" "n"
+        # 注意: 上面已将 ADGUARDHOME 设置为 y。如果 SmartDNS 为 n, AdGuardHome (若为y) 可能会处理DNS。
 
         ##内网穿透服务##
-        update_config_option "CONFIG_FIRMWARE_INCLUDE_ZEROTIER" "n"   # zerotier ~1.3M
-        update_config_option "CONFIG_FIRMWARE_INCLUDE_ALIDDNS" "n"    # aliddns
-        update_config_option "CONFIG_FIRMWARE_INCLUDE_DDNSTO" "n"     # ddnsto ~0.5M
-        update_config_option "CONFIG_FIRMWARE_INCLUDE_DDNSGO" "n"     # ddnsgo
-        update_config_option "CONFIG_FIRMWARE_INCLUDE_WIREGUARD" "n"  # wireguard ~10k
-        update_config_option "CONFIG_FIRMWARE_INCLUDE_CLOUDFLARE" "y" # cloudflare
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_ZEROTIER" "n"
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_ALIDDNS" "n"
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_DDNSTO" "n"
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_DDNSGO" "n"
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_WIREGUARD" "n"
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_CLOUDFLARE" "y"
 
-        ##其它网络服务## (Renamed section for clarity)
-        update_config_option "CONFIG_FIRMWARE_INCLUDE_ALDRIVER" "n"  # ALDRIVER  ~3m
-        update_config_option "CONFIG_FIRMWARE_INCLUDE_MENTOHUST" "n" # mentohust (already set to n, but explicit here is fine)
+        ##其它网络服务##
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_ALDRIVER" "n"
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_MENTOHUST" "n"
 
-        ## FTP服务 ~0.2MB ##
-        update_config_option "CONFIG_FIRMWARE_INCLUDE_FTPD" "n" # ftp
+        ## FTP服务 ##
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_FTPD" "n"
 
-        ## Alist测试 ~10MB ##
-        update_config_option "CONFIG_FIRMWARE_INCLUDE_ALIST" "y" # Alist
+        ## Alist ##
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_ALIST" "y"
 
         ##流控QOS##
-        update_config_option "CONFIG_FIRMWARE_INCLUDE_SQM" "n" # Qos限速
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_SQM" "n"
 
         #CPU超频#
-        update_config_option "CONFIG_FIRMWARE_INCLUDE_OC" "y" # CPU超频开关
-        # Ensure the OC value is quoted if it might be interpreted by shell, though update_config_option handles quotes.
-        update_config_option "CONFIG_FIRMWARE_MT7621_OC" "0x3B2" # 此处填写对应频率的十六进制：1000Mhz=0x312 1100Mhz=0x362 1120Mhz=0x372 1200Mhz=0x3B2
+        update_config_option "CONFIG_FIRMWARE_INCLUDE_OC" "y"
+        update_config_option "CONFIG_FIRMWARE_MT7621_OC" "0x3B2"
 
         #########################################################################################
         # 自定义添加其它功能请参考源码configs/templates/目录下的config文件。按照上面的格式添加即可
@@ -157,25 +139,64 @@ jobs:
         # update_config_option "CONFIG_CUSTOM_FEATURE" "y"
         #########################################################################################
 
-        echo "Final .config before build:"
-        cat .config # Output the .config for debugging
+        echo "编译前的最终 .config 文件内容:"
+        cat .config # 输出 .config 文件内容以供调试
 
         sudo ./clear_tree
-        sudo ./build_firmware_modify $TNAME 0 || { echo "::error::Firmware build failed (build_firmware_modify)"; exit 1; }
+        sudo ./build_firmware_modify $TNAME 0 || { echo "::error::固件编译脚本 (build_firmware_modify) 执行失败并报错。"; exit 1; }
         
-        # Check if firmware files were created
-        if ls images/*.bin 1> /dev/null 2>&1; then
-          echo "Firmware built successfully."
-          sudo mv -f images/*.bin /opt/images/
+        echo "编译脚本执行完毕。正在查找固件文件..."
+
+        # 再次确保目标目录存在 (虽然上一步应该已创建，但这是良好实践)
+        sudo mkdir -p /opt/images/
+
+        # 方案 1: 检查 build_firmware_modify 是否已经将固件移动到了 /opt/images/
+        echo "正在检查 /opt/images/ 目录中的固件..."
+        # 使用 ls 尝试列出文件，并通过 wc -l 计数。2>/dev/null 会抑制 ls 找不到文件时的错误输出。
+        FIRMWARE_FOUND_IN_OPT_IMAGES=$(sudo ls /opt/images/*.bin /opt/images/*.trx /opt/images/*.img 2>/dev/null | wc -l)
+
+        if [ "$FIRMWARE_FOUND_IN_OPT_IMAGES" -gt 0 ]; then
+            echo "在 /opt/images/ 目录中找到固件文件。build_firmware_modify 可能已经处理了移动操作。"
+            echo "列出 /opt/images/ 的内容:"
+            sudo ls -lR /opt/images/
         else
-          echo "::error::No firmware files (*.bin) found in images/ directory after build."
-          exit 1
+            echo "在 /opt/images/ 目录中未找到固件。正在检查 trunk/images/ 目录..."
+            # 方案 2: 在 trunk/images/ 及其子目录中查找常见的固件文件类型，并尝试移动它们
+            # find 命令会递归搜索
+            # -type f: 只查找文件
+            # \( -name "*.bin" -o -name "*.trx" -o -name "*.img" \): 查找这些扩展名的文件
+            # -print: 打印找到的文件路径
+            # -exec sudo mv -vt /opt/images/ {} + : 将找到的文件移动到 /opt/images/
+            
+            echo "正在 trunk/images/ 目录中搜索 .bin, .trx, .img 文件并尝试移动到 /opt/images/"
+            # 使用 sudo find，因为源文件可能由 root 创建
+            # {} 会被替换为找到的每个文件名，+ 表示将多个文件名传递给一个 mv 命令
+            sudo find images/ -type f \( -name "*.bin" -o -name "*.trx" -o -name "*.img" \) -print -exec sudo mv -vt /opt/images/ {} +
+
+            # 验证文件是否已移动到 /opt/images/
+            FIRMWARE_MOVED_TO_OPT_IMAGES=$(sudo ls /opt/images/*.bin /opt/images/*.trx /opt/images/*.img 2>/dev/null | wc -l)
+            if [ "$FIRMWARE_MOVED_TO_OPT_IMAGES" -gt 0 ]; then
+                echo "成功在 trunk/images/ 中找到固件文件并已移动到 /opt/images/。"
+                echo "列出 /opt/images/ 的内容:"
+                sudo ls -lR /opt/images/
+            else
+                # 如果在两个地方都没找到，提供详细的诊断信息
+                echo "::error::编译后在 trunk/images/ 目录或其子目录中未找到固件文件 (.bin, .trx, .img)。"
+                echo "列出 /opt/rt-n56u/trunk/images/ (递归) 的内容:"
+                sudo ls -lR images/ # images/ 相对于当前目录 /opt/rt-n56u/trunk/
+                echo "列出 /opt/images/ 的内容:"
+                sudo ls -lR /opt/images/
+                echo "为进行扩展调试，正在整个 /opt/rt-n56u/trunk/ 目录中搜索固件文件 (最多4层深度):"
+                # 在整个 trunk 目录搜索，以防固件被放在了意想不到的地方
+                sudo find /opt/rt-n56u/trunk/ -maxdepth 4 -type f \( -name "*.bin" -o -name "*.trx" -o -name "*.img" \) -print -exec ls -l {} \;
+                exit 1 # 明确表示失败
+            fi
         fi
 
-    - name: Upload Firmware Artifact
-      uses: actions/upload-artifact@v4 # Use specific version
-      if: always() # Upload artifacts even if previous steps failed (e.g., for logs or partial builds)
+    - name: Upload Firmware Artifact (上传固件产物)
+      uses: actions/upload-artifact@v4 # 使用特定版本
+      if: always() # 即使前面的步骤失败也尝试上传 (例如，上传日志或部分构建产物)
       with:
-        name: Padavan-${{ env.TNAME_MODEL }}-${{ github.run_id }} # More unique artifact name
-        path: /opt/images/
-        retention-days: 7 # Optional: Keep artifacts for 7 days
+        name: Padavan-${{ env.TNAME_MODEL }}-${{ github.run_id }} # 更独特的产物名称
+        path: /opt/images/ # 这个路径现在应该包含固件文件
+        retention-days: 7 # 可选：保留产物7天
