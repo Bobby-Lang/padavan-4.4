@@ -20,14 +20,7 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
       
-    - name: Cache toolchain
-      uses: actions/cache@v3
-      id: toolchain-cache
-      with:
-        path: /tmp/toolchain-cache
-        key: toolchain-${{ hashFiles('**/dl_toolchain.sh') }}
-        
-    - name: Initialization environment
+    - name: Install dependencies
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
@@ -38,42 +31,45 @@ jobs:
         
     - name: Prepare workspace
       run: |
+        echo "Workspace path: $GITHUB_WORKSPACE"
         mkdir -p $GITHUB_WORKSPACE/images
-        git clone --depth=1 https://github.com/Bobby-Lang/padavan-4.4.git $GITHUB_WORKSPACE/rt-n56u
+        echo "Cloning Padavan source code..."
+        git clone --depth=1 https://github.com/Bobby-Lang/padavan-4.4.git $GITHUB_WORKSPACE/rt-n56u || { echo "::error::Git clone failed"; exit 1; }
+        echo "Source code cloned successfully"
         
     - name: Setup toolchain
       run: |
         cd $GITHUB_WORKSPACE/rt-n56u/toolchain-mipsel
-        
-        # 使用缓存如果存在
-        if [ -f "/tmp/toolchain-cache/toolchain-mipsel.tar.gz" ]; then
-          echo "Using cached toolchain"
-          tar -xzf /tmp/toolchain-cache/toolchain-mipsel.tar.gz
-        else
-          echo "Downloading toolchain"
-          sh dl_toolchain.sh || exit 1
-          
-          # 缓存工具链
-          mkdir -p /tmp/toolchain-cache
-          tar -czf /tmp/toolchain-cache/toolchain-mipsel.tar.gz .
-        fi
+        echo "Downloading toolchain..."
+        sh dl_toolchain.sh || { echo "::error::Toolchain download failed"; exit 1; }
+        echo "Toolchain setup completed"
         
     - name: Build Firmware
       env:
         TNAME: MI-R4A
       run: |
+        set -e  # 任何命令失败立即退出
+        echo "Starting firmware build for $TNAME"
         cd $GITHUB_WORKSPACE/rt-n56u/trunk
         
         # 1. 检查模板是否存在
+        echo "Checking for template config..."
         if [ ! -f "configs/templates/$TNAME.config" ]; then
           echo "::error::configs/templates/$TNAME.config not found"
+          ls -la configs/templates/ || true
           exit 1
         fi
         
         # 2. 准备配置文件
-        cp -f configs/templates/$TNAME.config .config || exit 1
+        echo "Copying template config..."
+        cp -fv configs/templates/$TNAME.config .config || exit 1
         
         # 3. 配置修改
+        echo "Modifying configuration..."
+        # 备份原始配置以便调试
+        cp .config .config.original
+        
+        # 修改现有配置项
         sed -i 's/CONFIG_FIRMWARE_INCLUDE_OPENSSL_EXE=n/CONFIG_FIRMWARE_INCLUDE_OPENSSL_EXE=y/g' .config
         sed -i 's/CONFIG_FIRMWARE_INCLUDE_DNSFORWARDER=y/CONFIG_FIRMWARE_INCLUDE_DNSFORWARDER=n/g' .config
         sed -i 's/CONFIG_FIRMWARE_INCLUDE_MENTOHUST=y/CONFIG_FIRMWARE_INCLUDE_MENTOHUST=n/g' .config
@@ -82,45 +78,65 @@ jobs:
         sed -i 's/CONFIG_FIRMWARE_INCLUDE_SHADOWSOCKS=y/CONFIG_FIRMWARE_INCLUDE_SHADOWSOCKS=n/g' .config
         
         # 4. 添加自定义配置
-        echo "CONFIG_FIRMWARE_INCLUDE_SHADOWSOCKS=y" >> .config
-        echo "CONFIG_FIRMWARE_INCLUDE_XRAY=n" >> .config
-        echo "CONFIG_FIRMWARE_INCLUDE_V2RAY=n" >> .config
-        echo "CONFIG_FIRMWARE_INCLUDE_TROJAN=n" >> .config
-        echo "CONFIG_FIRMWARE_INCLUDE_SSOBFS=n" >> .config
-        echo "CONFIG_FIRMWARE_INCLUDE_ADBYBY=y" >> .config
-        echo "CONFIG_FIRMWARE_INCLUDE_ADGUARDHOME=y" >> .config
-        echo "CONFIG_FIRMWARE_INCLUDE_SMARTDNS=n" >> .config
-        echo "CONFIG_FIRMWARE_INCLUDE_ADGUARDHOME=n" >> .config
-        echo "CONFIG_FIRMWARE_INCLUDE_ZEROTIER=n" >> .config
-        echo "CONFIG_FIRMWARE_INCLUDE_ALIDDNS=n" >> .config
-        echo "CONFIG_FIRMWARE_INCLUDE_DDNSTO=n" >> .config
-        echo "CONFIG_FIRMWARE_INCLUDE_DDNSGO=n" >> .config
-        echo "CONFIG_FIRMWARE_INCLUDE_WIREGUARD=n" >> .config
-        echo "CONFIG_FIRMWARE_INCLUDE_CLOUDFLARE=y" >> .config
-        echo "CONFIG_FIRMWARE_INCLUDE_ALDRIVER=n" >> .config
-        echo "CONFIG_FIRMWARE_INCLUDE_MENTOHUST=n" >> .config
-        echo "CONFIG_FIRMWARE_INCLUDE_FTPD=n" >> .config
-        echo "CONFIG_FIRMWARE_INCLUDE_ALIST=y" >> .config
-        echo "CONFIG_FIRMWARE_INCLUDE_SQM=n" >> .config
-        echo "CONFIG_FIRMWARE_INCLUDE_OC=y" >> .config
-        echo 'CONFIG_FIRMWARE_MT7621_OC="0x3B2"' >> .config
+        echo "Adding custom configuration..."
+        {
+          echo "# Custom configuration added by build script"
+          echo "CONFIG_FIRMWARE_INCLUDE_SHADOWSOCKS=y"
+          echo "CONFIG_FIRMWARE_INCLUDE_XRAY=n"
+          echo "CONFIG_FIRMWARE_INCLUDE_V2RAY=n"
+          echo "CONFIG_FIRMWARE_INCLUDE_TROJAN=n"
+          echo "CONFIG_FIRMWARE_INCLUDE_SSOBFS=n"
+          echo "CONFIG_FIRMWARE_INCLUDE_ADBYBY=y"
+          echo "CONFIG_FIRMWARE_INCLUDE_ADGUARDHOME=y"
+          echo "CONFIG_FIRMWARE_INCLUDE_SMARTDNS=n"
+          echo "CONFIG_FIRMWARE_INCLUDE_ADGUARDHOME=n"
+          echo "CONFIG_FIRMWARE_INCLUDE_ZEROTIER=n"
+          echo "CONFIG_FIRMWARE_INCLUDE_ALIDDNS=n"
+          echo "CONFIG_FIRMWARE_INCLUDE_DDNSTO=n"
+          echo "CONFIG_FIRMWARE_INCLUDE_DDNSGO=n"
+          echo "CONFIG_FIRMWARE_INCLUDE_WIREGUARD=n"
+          echo "CONFIG_FIRMWARE_INCLUDE_CLOUDFLARE=y"
+          echo "CONFIG_FIRMWARE_INCLUDE_ALDRIVER=n"
+          echo "CONFIG_FIRMWARE_INCLUDE_MENTOHUST=n"
+          echo "CONFIG_FIRMWARE_INCLUDE_FTPD=n"
+          echo "CONFIG_FIRMWARE_INCLUDE_ALIST=y"
+          echo "CONFIG_FIRMWARE_INCLUDE_SQM=n"
+          echo "CONFIG_FIRMWARE_INCLUDE_OC=y"
+          echo 'CONFIG_FIRMWARE_MT7621_OC="0x3B2"'
+        } >> .config
         
-        # 5. 清理和构建（移除sudo）
-        ./clear_tree || exit 1
-        ./build_firmware_modify $TNAME 0 || exit 1
+        # 5. 检查配置差异（用于调试）
+        echo "Configuration differences:"
+        diff .config.original .config || true
         
-        # 6. 移动生成的固件（使用相对路径）
+        # 6. 清理工作区
+        echo "Cleaning workspace..."
+        ./clear_tree || { echo "::warning::Clean command failed, continuing anyway"; }
+        
+        # 7. 构建固件 - 启用详细日志
+        echo "Building firmware with verbose output..."
+        ./build_firmware_modify $TNAME 0 V=1 || { 
+          echo "::error::Firmware build failed";
+          # 尝试收集错误日志
+          [ -f build.log ] && tail -n 100 build.log || echo "No build log found";
+          exit 1;
+        }
+        
+        # 8. 移动生成的固件
+        echo "Moving firmware images..."
         if [ -d "images" ]; then
           mv -v images/*.bin $GITHUB_WORKSPACE/images/
-          echo "Firmware files found:"
+          echo "Firmware files:"
           ls -lh $GITHUB_WORKSPACE/images/
         else
           echo "::error::No firmware files generated in images/"
           exit 1
         fi
         
+        echo "Build completed successfully!"
+        
     - name: Upload firmware artifacts
-      if: ${{ success() }}  # 仅在构建成功时上传
+      if: success()
       uses: actions/upload-artifact@v4
       with:
         name: Padavan-Firmware-${{ env.TNAME }}
