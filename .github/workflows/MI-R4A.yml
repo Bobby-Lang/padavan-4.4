@@ -27,14 +27,15 @@ jobs:
         sudo apt-get update
         sudo apt-get -y install unzip libtool-bin curl cmake gperf gawk flex bison nano xxd \
         cpio git python3-docutils gettext automake autopoint texinfo build-essential help2man \
-        pkg-config zlib1g-dev libgmp3-dev libmpc-dev libmpfr-dev libncurses5-dev libltdl-dev wget
+        pkg-config zlib1g-dev libgmp3-dev libmpc-dev libmpfr-dev libncurses5-dev libltdl-dev wget \
+        fakeroot  # 确保安装 fakeroot
         
     - name: Prepare workspace
       run: |
         echo "Workspace path: $GITHUB_WORKSPACE"
         mkdir -p $GITHUB_WORKSPACE/images
         echo "Cloning Padavan source code..."
-        git clone --depth=1 https://github.com/jinenge/padavan-4.4.git $GITHUB_WORKSPACE/rt-n56u || { echo "::error::Git clone failed"; exit 1; }
+        git clone --depth=1 https://github.com/Bobby-Lang/padavan-4.4.git $GITHUB_WORKSPACE/rt-n56u || { echo "::error::Git clone failed"; exit 1; }
         echo "Source code cloned successfully"
         
     - name: Setup toolchain
@@ -48,7 +49,7 @@ jobs:
       env:
         TNAME: MI-R4A
       run: |
-        set -euo pipefail  # 更严格的错误处理
+        set -euo pipefail
         echo "Starting firmware build for $TNAME"
         cd $GITHUB_WORKSPACE/rt-n56u/trunk
         
@@ -67,7 +68,6 @@ jobs:
         
         # 3. 配置修改
         echo "Modifying configuration..."
-        # 备份原始配置以便调试
         cp .config .config.original
         
         # 修改现有配置项
@@ -78,7 +78,7 @@ jobs:
         sed -i 's/CONFIG_FIRMWARE_INCLUDE_SRELAY=y/CONFIG_FIRMWARE_INCLUDE_SRELAY=n/g' .config
         sed -i 's/CONFIG_FIRMWARE_INCLUDE_SHADOWSOCKS=y/CONFIG_FIRMWARE_INCLUDE_SHADOWSOCKS=n/g' .config
         
-        # 4. 添加自定义配置 - 修复配置冲突
+        # 4. 添加自定义配置
         echo "Adding custom configuration..."
         {
           echo "# Custom configuration added by build script"
@@ -88,7 +88,6 @@ jobs:
           echo "CONFIG_FIRMWARE_INCLUDE_TROJAN=n"
           echo "CONFIG_FIRMWARE_INCLUDE_SSOBFS=n"
           echo "CONFIG_FIRMWARE_INCLUDE_ADBYBY=y"
-          # 修复冲突的配置项 - ADGUARDHOME 只设置一次
           echo "CONFIG_FIRMWARE_INCLUDE_ADGUARDHOME=y"
           echo "CONFIG_FIRMWARE_INCLUDE_SMARTDNS=n"
           echo "CONFIG_FIRMWARE_INCLUDE_ZEROTIER=n"
@@ -106,26 +105,19 @@ jobs:
           echo 'CONFIG_FIRMWARE_MT7621_OC="0x3B2"'
         } >> .config
         
-        # 5. 检查配置差异（用于调试）
         echo "Configuration differences:"
         diff .config.original .config || true
         
-        # 6. 清理工作区
-        echo "Cleaning workspace..."
-        ./clear_tree || { echo "::warning::Clean command failed, continuing anyway"; }
+        # 5. 清理工作区 - 使用fakeroot
+        echo "Cleaning workspace with fakeroot..."
+        fakeroot ./clear_tree || { echo "::warning::Clean command failed, continuing anyway"; }
         
-        # 7. 构建固件 - 启用详细日志并捕获输出
-        echo "Building firmware with verbose output..."
-        
-        # 创建日志文件并实时输出到控制台
-        rm -f build.log
-        touch build.log
-        tail -f build.log &  # 后台实时输出日志
+        # 6. 构建固件 - 关键修复：使用fakeroot运行构建命令
+        echo "Building firmware with fakeroot..."
         
         # 运行构建命令并捕获所有输出
-        ./build_firmware_modify $TNAME 0 V=1 2>&1 | tee -a build.log || { 
+        fakeroot ./build_firmware_modify $TNAME 0 V=1 2>&1 | tee build.log || { 
           echo "::error::Firmware build failed";
-          # 显示错误部分日志
           echo "Last 50 lines of build log:";
           tail -n 50 build.log;
           echo "Error section from build log:";
@@ -133,26 +125,23 @@ jobs:
           exit 1;
         }
         
-        # 停止后台日志输出
-        kill %1
-        
-        # 8. 移动生成的固件
+        # 7. 移动生成的固件
         echo "Moving firmware images..."
-        if ls images/*.bin >/dev/null 2>&1; then
+        if find images/ -name '*.bin' | grep -q .; then
           mv -v images/*.bin $GITHUB_WORKSPACE/images/
           echo "Firmware files:"
           ls -lh $GITHUB_WORKSPACE/images/
         else
           echo "::error::No firmware files generated in images/"
           echo "Generated files in images/:"
-          ls -R images/ || true
+          find images/ -type f || true
           exit 1
         fi
         
         echo "Build completed successfully!"
         
     - name: Upload build log
-      if: always()  # 总是上传日志，即使失败
+      if: always()
       uses: actions/upload-artifact@v4
       with:
         name: build-log-${{ env.TNAME }}
